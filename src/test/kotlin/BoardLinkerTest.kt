@@ -52,7 +52,7 @@ class BoardLinkerTest {
     }
 
     @Test
-    fun testPropogate() {
+    fun testPropagate() {
         val b = readLinker("/test.json")
         val bp = BoardProcessor(RamStorage())
         var board = b.b
@@ -64,6 +64,9 @@ class BoardLinkerTest {
                     bp.sinkTicks(100000, board, white)
                 }
                 bp.printStats()
+                bp.reevaluateWeights(board, white)
+                bp.printJustWeights(board, white)
+                //should produce exactly the same numbers!!! for debug only
                 bp.reevaluateWeights(board, white)
                 bp.printJustWeights(board, white)
             }

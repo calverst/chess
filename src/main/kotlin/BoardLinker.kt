@@ -168,7 +168,7 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
 
     fun reevaluateWeights(b: Board, w: Boolean) {
 
-        var callCount = 0
+        var callCount = 0 //for debug only
 
     fun tempAvg(bl: BoardLinker):Double {
         val weights = mutableListOf<Pair<Double,Long>>()
