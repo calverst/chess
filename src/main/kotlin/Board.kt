@@ -73,7 +73,7 @@ class Pawn(x: Byte, y: Byte, w: Boolean) : Piece(x, y, w) {
         return 1
     }
     override fun wht(): Int {
-        return 30
+        return 100
     }
     override fun move(to: Piece):Piece {
         return Pawn(to.x,to.y,w)
@@ -145,7 +145,7 @@ class Rook(x: Byte, y: Byte, w: Boolean) : Piece(x, y, w) {
         return 2
     }
     override fun wht(): Int {
-        return 100
+        return 1000
     }
     override fun move(to: Piece):Piece {
         return Rook(to.x,to.y,w)
@@ -173,7 +173,7 @@ class Bishop(x: Byte, y: Byte, w: Boolean) : Piece(x, y, w) {
         return 3
     }
     override fun wht(): Int {
-        return 50
+        return 500
     }
     override fun move(to: Piece):Piece {
         return Bishop(to.x,to.y,w)
@@ -196,7 +196,7 @@ class Knight(x: Byte, y: Byte, w: Boolean) : Piece(x, y, w) {
         return 4
     }
     override fun wht(): Int {
-        return 50
+        return 500
     }
 
     override fun move(to: Piece):Piece {
@@ -257,7 +257,7 @@ class Queen(x: Byte, y: Byte, w: Boolean) : Piece(x, y, w) {
         return 6
     }
     override fun wht(): Int {
-        return 200
+        return 2000
     }
 
     override fun move(to: Piece):Piece {
@@ -351,9 +351,25 @@ class Board(val b: Array<Array<Piece>>) {
             }
         }
     }
-    fun evalBoardAvg(w:Boolean):Int {
-        return evalBoard(w)-evalBoard(!w)
-    }
+
+/*  Current board evaluation actually comes paired with the greediest next move
+*          of the opponent e.g. DW0 + PW0 - MAX(DB1 + PB1)
+*   Basic definitions are follows (assume white evaluation; flips for black):
+*      DW0/DB0, DW1/DB1 .... - combined piece weight per color on current turn +0, +1 ....
+*      PW0/PB0, PW1/PB1 .... - combined positional weight per color on current turn +0, +1 ....
+*      Since DWX and PWX are always combined, use EWX = DWX + PWX (e.g. EW0 = DW0 + PW0)
+*   Since there are multiple possibilities for next turns any weights for the following turns
+*     has to be used in aggregates MAX, AVG etc...
+*   What important is that we only store half of the board calculation evaluation (e.g. DW0 + PW0)
+*     and aggregate on the following turns to calculate the current board value.
+*
+*   If we know nothing about how the board may develop we can safely pick the turn that would minimize our damage
+*     which would translate into value of EW0 - MIN(EB1) assuming we take the turn leading to minimal opponent value
+*   Importantly even if we know the extensive board value (EEB1) we still would pick the next turn based on MIN,
+*     The only problem is to make sure the scale of the extensive evaluation matches the basic one...
+*   !!! LOST - Board value has to be forced to be 0 or negative if the corresponding King is missing
+*   !!! WIN - Any piece takes King has to have a very high value since it is a win condition
+* */
     fun evalBoard(w:Boolean):Int {
         //println("eval for ${w}")
         var total = 0
@@ -377,9 +393,6 @@ class Board(val b: Array<Array<Piece>>) {
             //println("eval for ${aa.code()}(${aa.x},${aa.y}) ${c} ${d}")
             total += aa.wht()
             total += d
-        }
-        eachPiece(!w) { aa ->
-            total -= aa.wht()
         }
         return total
     }
@@ -427,6 +440,7 @@ class Board(val b: Array<Array<Piece>>) {
         const val B3 = 3.toByte()
         const val B5 = 5.toByte()
         const val B6 = 6.toByte()
+        const val WIN_WEIGHT = 10000
         const val mask3b = 7.toByte()
         fun encodeTurnKey(from: Piece, to:Piece, isPromoteKnight: Boolean = false):Int {
             //add more params if needed (e.g. promote to knight), t must be unique
@@ -438,14 +452,14 @@ class Board(val b: Array<Array<Piece>>) {
         //asses = current board value - best next move value (not average)
         val takesWeights = arrayOf(
             arrayOf(0,0,0,0,0,0,0), //Empty   0
-            arrayOf(10,50,80,100,100,200,100), //Pawn    1
-            arrayOf(10,20,50,30,30,200,100), //Rook    5
-            arrayOf(10,30,80,40,40,200,100), //Bishop  3
-            arrayOf(10,30,80,40,40,200,100), //Knight  3
-            arrayOf(10,30,30,30,30,30,30), //King    10
-            arrayOf(10,20,50,30,30,200,100)) //Queen   20
+            arrayOf(10,50,80,100,100,WIN_WEIGHT,100), //Pawn    1
+            arrayOf(10,20,50,30,30,WIN_WEIGHT,100), //Rook    5
+            arrayOf(10,30,80,40,40,WIN_WEIGHT,100), //Bishop  3
+            arrayOf(10,30,80,40,40,WIN_WEIGHT,100), //Knight  3
+            arrayOf(10,30,30,30,30,WIN_WEIGHT,30), //King    10
+            arrayOf(10,20,50,30,30,WIN_WEIGHT,100)) //Queen   20
         val protectWeights = arrayOf(
-            arrayOf(0,0,0,0,0,0,0), //Empty
+            arrayOf(1,1,1,1,1,1,1), //Empty
             arrayOf(10,30,20,20,20,0,20), //Pawn
             arrayOf(10,30,20,30,30,0,20), //Rook
             arrayOf(10,30,20,30,30,0,20), //Bishop

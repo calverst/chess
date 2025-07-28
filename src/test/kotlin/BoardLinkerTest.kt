@@ -11,12 +11,12 @@ class BoardLinkerTest {
 
     val mapper = ObjectMapper().registerKotlinModule()
 
-    fun readLinker(path:String): BoardLinker {
+    fun readBoard(path:String): Board {
         val json = IOUtils.toString(
             this.javaClass.getResourceAsStream(path),
             "UTF-8"
         )
-        return mapper.readValue(json, BoardLinker::class.java)
+        return mapper.readValue(json, Board::class.java)
     }
 
     @BeforeEach
@@ -33,17 +33,17 @@ class BoardLinkerTest {
     @Test
     fun testArrFun() {
 
-        val b = readLinker("/test.json")
-        b.b.print()
-        b.b.evalBoard(true)
-        b.b.develop(true){ (kk,bb) ->
+        val b = readBoard("/test.json")
+        b.print()
+        b.evalBoard(true)
+        b.develop(true){ (kk,bb) ->
             println()
             Turn.printKey(bb,kk)
             bb.print()
             println()
         }
-        b.b.evalBoard(false)
-        b.b.develop(false){ (kk,bb) ->
+        b.evalBoard(false)
+        b.develop(false){ (kk,bb) ->
             println()
             Turn.printKey(bb,kk)
             bb.print()
@@ -53,22 +53,21 @@ class BoardLinkerTest {
 
     @Test
     fun testPropagate() {
-        val b = readLinker("/test.json")
         val bp = BoardProcessor(RamStorage())
-        var board = b.b
-        var white = b.w
+        var board = readBoard("/test.json")
+        var white = true
         for (k in 1..20) {
             bp.clearStorage()
             for (j in 1..20) {
                 for (i in 1..100) {
-                    bp.sinkTicks(100000, board, white)
+                    bp.sinkTicks(8000, board, white)
                 }
                 bp.printStats()
                 bp.reevaluateWeights(board, white)
                 bp.printJustWeights(board, white)
                 //should produce exactly the same numbers!!! for debug only
-                bp.reevaluateWeights(board, white)
-                bp.printJustWeights(board, white)
+                //bp.reevaluateWeights(board, white)
+                //bp.printJustWeights(board, white)
             }
             val turn = bp.turn(board,white)
             board = turn.first

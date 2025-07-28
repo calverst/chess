@@ -2,9 +2,7 @@ package org.example
 
 import java.util.concurrent.ConcurrentHashMap
 
-class Turn(val key:Int, val hash:Long,
-                //it is dangerous to use vars here... it's done only for the demo purposes
-                var weight:Double = 1.0, var state:LinkerState = LinkerState.DEFINED){
+class Turn(val key:Int, val hash:Long, val weight:Double){
     companion object {
         const val mask3b = 7
         fun printKey(b:Board, key:Int) {
@@ -25,64 +23,98 @@ class Turn(val key:Int, val hash:Long,
         }
     }
     fun isNotDone():Boolean {
-        return state == LinkerState.DEFINED || state == LinkerState.LINKED
+        return weight > BoardLinker.LOST_WEIGHT && weight < BoardLinker.WIN_WEIGHT
     }
 }
 
 interface BoardsStorage {
-    fun defineBoard(b:Board, w:Boolean)
+    fun defineBoard(b:Board, w:Boolean):Int
     fun updateLinker(bl:BoardLinker)
     fun propagateTicks(tickCount:Int, board_hash:Long)
-    fun time():Long
+    fun getLinker(board_hash:Long, cb:Acceptor<BoardLinker>)
 }
 
-enum class LinkerState {DEFINED,WON,LOST,LINKED}
+enum class LinkerState {    DEFINED, //just created, no subsequent turns calculated
+                            WON, //evaluation leads to win
+                            LOST, //evaluation leads to loss
+                            LINKED //all subsequent turns calculated
+}
 
-class BoardLinker(val b:Board, val w:Boolean, val turns:Array<Turn>,
-                  //stats
-                  //it is dangerous to use vars here... it's done only for the demo purposes
-                  var state:LinkerState = LinkerState.DEFINED,
-                  var avgWeight:Double = 1.0,//board score avaraged by total amount of children existed
-                  var tickAccumulated:Int = 0,//ticks accumulated currently
-                  var tickProcessed:Long = 0L,//total count of ticks consumed
-                  var childCount:Long = 0L,//total number of boards derived from current
-                  var weightTimestamp:Long = 0L,//timestamp of a last count
-                  var boardWeight:Int = 0
+open class BoardLinker(val b:Board, val w:Boolean, val boardWeight:Int, val state:LinkerState
 ) {
+    var tickAccumulated:Int = 0//ticks accumulated currently
+    var tickProcessed:Long = 0L//total count of ticks consumed
+    fun setTurns(t:Array<Turn>, minOpponentBoardWeight:Int):BoardLinkerLinked {
+        return BoardLinkerLinked(b,w,boardWeight,t,boardWeight.toDouble()-minOpponentBoardWeight)
+    }
     //propagation
     fun propagateTicks(tickCount:Int, bs:BoardsStorage) {
         tickAccumulated += tickCount
-        when(state) {
-            LinkerState.DEFINED -> processDefined(bs)
-            LinkerState.LINKED -> processLinked(bs)
-            else -> nothing()
-        }
+        processTicks(bs)
     }
-    fun nothing() {}
-    fun processDefined(bs:BoardsStorage) {
-        if (tickAccumulated >= LINK_COST) {
+    open fun processTicks(bs:BoardsStorage) {
+        //TODO: return ticks for won/lost
+        if (state == LinkerState.DEFINED && tickAccumulated >= LINK_COST) {
             tickAccumulated -= LINK_COST
             tickProcessed += LINK_COST
-            val out = mutableListOf<Turn>()
-            b.develop(w) { (kk,bb) ->
-                bs.defineBoard(bb,!w)
-                out.add(Turn(kk,bb.calcHash(!w)))
-            }
-            bs.updateLinker(setTurns(out.toTypedArray()))
+            developMoves(bs)
         }
     }
-    fun processLinked(bs:BoardsStorage) {
+    fun developMoves(bs:BoardsStorage):Pair<Double,Long> {
+        val out = mutableListOf<Turn>()
+        var min = WIN_WEIGHT
+        b.develop(w) { (kk,bb) ->
+            val ww = bs.defineBoard(bb,!w)
+            if (ww < min) {
+                min = ww
+            }
+            out.add(Turn(kk,bb.calcHash(!w),ww.toDouble()))
+        }
+        if (min == LOST_WEIGHT) {
+            bs.updateLinker(BoardLinker(b,w,boardWeight,LinkerState.WON))
+            return Pair(WIN_WEIGHT.toDouble(), out.size.toLong())
+        } else {
+            bs.updateLinker(setTurns(out.toTypedArray(), min))
+        }
+        return Pair(boardWeight.toDouble()-min, out.size.toLong())
+    }
+    open fun getFlatWeight(ts:Long, bs:BoardsStorage):Pair<Double,Long> {
+        if (state == LinkerState.LOST) {
+            return Pair(LOST_WEIGHT.toDouble(),1)
+        }
+        if (state == LinkerState.WON) {
+            return Pair(WIN_WEIGHT.toDouble(),1)
+        }
+        //should never be here, but if here...
+        //    we have to link the board to get a value
+        return developMoves(bs)
+    }
+    companion object {
+        const val LINK_COST = 100
+        const val TURNS_MULT = 10
+        const val WIN_WEIGHT = 10000
+        const val LOST_WEIGHT = 1
+    }
+}
+class BoardLinkerLinked(b:Board, w:Boolean, boardWeight:Int, val turns:Array<Turn>,
+    //stats
+    //it is dangerous to use vars here... it's done only for the demo purposes
+    var extValue:Double = 1.0,//board score avaraged by total amount of children existed
+    var weightTimestamp:Long = 0L,//timestamp of a last count
+    var childCount:Long = 0L,//timestamp of a last count
+):BoardLinker(b, w, boardWeight, LinkerState.LINKED) {
+    override fun processTicks(bs:BoardsStorage) {
         if (tickAccumulated >= turns.size*TURNS_MULT) {
             var budget = 0.0
             for (t in turns) {
                 if (t.isNotDone()) {
-                    budget += t.weight
+                    budget += 1/t.weight
                 }
             }
             val b_chunk = tickAccumulated/budget
             for (t in turns) {
                 if (t.isNotDone()) {
-                    val sz = (b_chunk*t.weight).toInt()
+                    val sz = (b_chunk/t.weight).toInt()
                     tickAccumulated -= sz
                     tickProcessed += sz
                     bs.propagateTicks(sz, t.hash)
@@ -90,27 +122,25 @@ class BoardLinker(val b:Board, val w:Boolean, val turns:Array<Turn>,
             }
         }
     }
-    fun setTurns(t:Array<Turn>):BoardLinker {
-        return BoardLinker(b,w,t,LinkerState.LINKED,
-            avgWeight,tickAccumulated,tickProcessed,childCount,weightTimestamp,boardWeight)
-    }
     fun setWeight(w:Double, c: Long, ts:Long) {
         if (w.isNaN()) {
             println(w)
         }
-        avgWeight = w
+        extValue = w
         childCount = c
         weightTimestamp = ts
     }
-    fun getWeight():Pair<Double,Long> {
-        return Pair(avgWeight,childCount)
+    override fun getFlatWeight(ts:Long, bs:BoardsStorage):Pair<Double,Long> {
+        return Pair(extValue,turns.size.toLong())
     }
-    companion object {
-        const val LINK_COST = 100
-        const val TURNS_MULT = 10
-        const val WIN_WEIGHT = 1000.0
-        const val LOST_WEIGHT = -1000.0
-        const val DEFAULT_WEIGHT = 1.0
+    fun iterateTurns(ts:Long, bs:BoardsStorage, cb: Acceptor<Pair<Turn, BoardLinker>>) {
+        for (t in turns) {
+            //todo check if turn possible to eliminate hash dups
+            //alternatively return board linker instead
+            bs.getLinker(t.hash) { bl ->
+                cb(Pair(t,bl))
+            }
+        }
     }
 }
 
@@ -144,16 +174,14 @@ class  RamStorage<K,V>:GenericStorage<K,V> {
 class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage {
     fun getLinker(b: Board, w: Boolean, cb:Acceptor<BoardLinker>) {
         storage.load(b.calcHash(w), cb) { blk ->
-            //evaluate lost here might be bad idea, add win as well??
-            val out = if (b.lost(w)) BoardLinker(b,w, arrayOf(), LinkerState.LOST, BoardLinker.LOST_WEIGHT)
-                                else BoardLinker(b,w, arrayOf())
-            if (out.state != LinkerState.LOST) {
-                out.boardWeight = out.b.evalBoard(out.w)
-                out.avgWeight = (out.boardWeight - out.b.evalBoard(!out.w)).toDouble()
-                if (out.avgWeight.isNaN()) {
-                    println(out.avgWeight)
-                }
+            //evaluate win/lost here might be bad idea...
+            val bs = boardState(b,w)
+            val wght:Int = when(bs) {
+                LinkerState.LOST -> BoardLinker.LOST_WEIGHT
+                LinkerState.WON -> BoardLinker.WIN_WEIGHT
+                else -> b.evalBoard(w)
             }
+            val out = BoardLinker(b,w,wght,bs)
             storage.store(b.calcHash(w), out)
             cb(out)
         }
@@ -170,79 +198,48 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
 
         var callCount = 0 //for debug only
 
-    fun tempAvg(bl: BoardLinker):Double {
-        val weights = mutableListOf<Pair<Double,Long>>()
-        for (t in bl.turns) {
-            storage.loadSafe(t.hash) { bbl ->
-                weights.add(Pair(bbl.boardWeight.toDouble(),0))
+        fun tempAvg(bl: BoardLinkerLinked):Double {
+            val weights = mutableListOf<Pair<Double,Long>>()
+            for (t in bl.turns) {
+                storage.loadSafe(t.hash) { bbl ->
+                    weights.add(Pair(bbl.boardWeight.toDouble(),0))
+                }
             }
+            val (sum,count) = fastAvg(bl.boardWeight, weights)
+            return sum
         }
-        val (sum,count) = fastAvg(bl.boardWeight, weights)
-        return sum
-    }
 
-    fun avgNextTurn(visited:Array<Long>, bl: BoardLinker, ts:Long):Pair<Double,Long> {
-        callCount++
-        if (bl.weightTimestamp == ts) {
-            return bl.getWeight()
-        }
-        if (bl.state == LinkerState.LOST) {
-            bl.setWeight(BoardLinker.LOST_WEIGHT, 0, ts)
-            return bl.getWeight()
-        }
-        if (bl.state == LinkerState.WON) {
-            bl.setWeight(BoardLinker.WIN_WEIGHT, 0, ts)
-            return bl.getWeight()
-        }
-        if (bl.state == LinkerState.DEFINED) {
-            bl.setWeight(bl.b.evalBoardAvg(bl.w).toDouble(), 0, ts)
-            return bl.getWeight()
-        }
-        //var win = false
-        if (bl.state == LinkerState.LINKED) {
-            if (bl.tickProcessed < TICK_THRESHOLD) {
-                val weights = mutableListOf<Pair<Double,Long>>()
-                for (t in bl.turns) {
-                    storage.loadSafe(t.hash) { bbl ->
-                        weights.add(Pair(bbl.boardWeight.toDouble(),0))
-                        t.weight = bbl.boardWeight.toDouble()
-                        t.state = bbl.state
-                    }
-                }
-                normalizeTurnWeights(bl)
-                val (sum,count) = fastAvg(bl.boardWeight, weights)
-                bl.setWeight(sum, count+weights.size, ts)
-            } else {
-                val weights = mutableListOf<Triple<Double,Long,Int>>()
-                for (t in bl.turns) {
-                    if (!visited.contains(t.hash)) {
-                        storage.loadSafe(t.hash) { bbl ->
-                            val a = avgNextTurn(visited.plus(t.hash), bbl, ts)
-                            t.weight = a.first
-                            t.state = bbl.state
-                            weights.add(addBoardWeight(a,bbl))
-                        }
-                    } else {
-                        storage.loadSafe(t.hash) { bbl ->
-                            t.state = bbl.state
-                            if (bbl.weightTimestamp != ts) {
-                                bbl.setWeight(tempAvg(bbl),0,ts)
-                            }
-                            t.weight = bbl.avgWeight
-                            weights.add(addBoardWeight(Pair(t.weight,bbl.childCount),bbl))
+        fun avgNextTurn(visited:Array<Long>, bl: BoardLinker, ts:Long):Pair<Double,Long> {
+            callCount++
+            if (bl is BoardLinkerLinked) {
+                if (bl.tickProcessed < TICK_THRESHOLD) {
+                    val fw = bl.getFlatWeight(ts, this)
+                    //normalizeTurnWeights(bl)
+                    //val (sum,count) = fastAvg(bl.boardWeight, weights)
+                    bl.setWeight(fw.first, fw.second, ts)
+                    return fw
+                } else {
+                    var childCount = 0L
+                    val weights = mutableListOf<Triple<Double,Long,Int>>()
+                    bl.iterateTurns(ts, this) { (t,bbl) ->
+                        if (visited.contains(t.hash)) {
+                            val fw = bbl.getFlatWeight(ts, this)
+                            childCount += fw.second
+                            weights.add(addBoardWeight(fw, bbl))
+                        } else {
+                            val fw = avgNextTurn(visited.plus(t.hash), bbl, ts)
+                            childCount += fw.second
+                            weights.add(addBoardWeight(fw, bbl))
                         }
                     }
+                    //normalizeTurnWeights(bl)
+                    val (wght,count) = sumWghtAvg(bl.boardWeight,weights)
+                    bl.setWeight(wght, count+bl.turns.size, ts)
+                    return Pair(wght, count+bl.turns.size)
                 }
-                normalizeTurnWeights(bl)
-                val (wght,count) = sumWghtAvg(bl.boardWeight,weights)
-                bl.setWeight(wght, count+bl.turns.size, ts)
             }
+            return bl.getFlatWeight(ts, this)
         }
-        if (bl.state == LinkerState.WON) {
-            bl.setWeight(BoardLinker.WIN_WEIGHT, 0, ts)
-        }
-        return bl.getWeight()
-    }
 
         //go deepest from current, keep track for loops
         //todo - passing and castling should be checked here
@@ -263,25 +260,6 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
         return sum
     }
 
-    fun normalizeTurnWeights(bl:BoardLinker) {
-        //check if win, inverse weights, adjust zero, normalize
-        var sum = 0.0
-        var min = 1000000.0
-        for (t in bl.turns) {
-            if (t.state == LinkerState.LOST) {
-                bl.state = LinkerState.WON
-            }
-            t.weight = -t.weight
-            if (t.weight < min) {
-                min = t.weight
-            }
-            sum += t.weight
-        }
-        sum = sum/bl.turns.size - min //adj zero and normalize
-        for (t in bl.turns) {
-            t.weight = (t.weight-min)/avoidNullSum(sum) + WEIGHT_BIAS
-        }
-    }
 
     fun addBoardWeight(p:Pair<Double,Long>, bl:BoardLinker):Triple<Double,Long,Int> {
         return Triple(p.first,p.second,bl.boardWeight)
@@ -358,10 +336,12 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
         }
     }
 
-    override fun defineBoard(b: Board, w: Boolean) {
+    override fun defineBoard(b: Board, w: Boolean):Int {
+        var weight = 0
         getLinker(b,w) { bb ->
-            //done
+            weight = bb.boardWeight
         }
+        return weight
     }
 
     override fun updateLinker(bl: BoardLinker) {
@@ -373,8 +353,11 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
             bl.propagateTicks(tickCount, this)
         }
     }
+    override fun getLinker(board_hash:Long, cb:Acceptor<BoardLinker>) {
+        storage.loadSafe(board_hash, cb)
+    }
 
-    override fun time(): Long {
+    fun time(): Long {
         return System.currentTimeMillis()
     }
     fun turn(b: Board, w: Boolean):Pair<Board,Int> {
@@ -382,12 +365,16 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
         var board = b
         var turn = 0
         getLinker(b,w) { bl ->
-            for (t in bl.turns) {
-                storage.loadSafe(t.hash) { bbl ->
-                    if (bbl.avgWeight < min) {
-                        min = bbl.avgWeight
-                        board = bbl.b
-                        turn = t.key
+            if (bl is BoardLinkerLinked) {
+                for (t in bl.turns) {
+                    storage.loadSafe(t.hash) { bbl ->
+                        if (bbl is BoardLinkerLinked) {
+                            if (bbl.extValue < min) {
+                                min = bbl.extValue
+                                board = bbl.b
+                                turn = t.key
+                            }
+                        }
                     }
                 }
             }
@@ -396,12 +383,16 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
     }
     fun printWeights(b: Board, w: Boolean) {
         getLinker(b,w) { bl ->
-            println(" [${bl.avgWeight} ${bl.childCount}] ")
-            for (t in bl.turns) {
-                storage.loadSafe(t.hash) { bbl ->
-                    print(" (${t.weight} ${bbl.b.evalBoardAvg(bbl.w)} ${bbl.avgWeight} ${bbl.childCount} ${bbl.tickProcessed}) ")
-                    Turn.printKey(bbl.b, t.key)
-                    bbl.b.print()
+            if (bl is BoardLinkerLinked) {
+                println(" [${bl.extValue} ${bl.childCount}] ")
+                for (t in bl.turns) {
+                    storage.loadSafe(t.hash) { bbl ->
+                        if (bbl is BoardLinkerLinked) {
+                            print(" (${t.weight} ${bbl.extValue} ${bbl.childCount} ${bbl.tickProcessed}) ")
+                            Turn.printKey(bbl.b, t.key)
+                            bbl.b.print()
+                        }
+                    }
                 }
             }
             println()
@@ -419,9 +410,13 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
     }
     fun printJustWeights(b: Board, w: Boolean) {
         getLinker(b,w) { bl ->
-            for (t in bl.turns) {
-                storage.loadSafe(t.hash) { bbl ->
-                    print(String.format(" %.4f|%.4f",t.weight,bbl.avgWeight))
+            if (bl is BoardLinkerLinked) {
+                for (t in bl.turns) {
+                    storage.loadSafe(t.hash) { bbl ->
+                        if (bbl is BoardLinkerLinked) {
+                            print(String.format(" %.4f|%.4f", t.weight, bbl.extValue))
+                        }
+                    }
                 }
             }
             println()
@@ -451,5 +446,14 @@ class BoardProcessor(val storage:GenericStorage<Long,BoardLinker>):BoardsStorage
     companion object {
         const val TICK_THRESHOLD = 5000
         const val WEIGHT_BIAS = 0.1
+        fun boardState(b: Board, w: Boolean):LinkerState {
+            if (b.lost(w)) {
+                return LinkerState.LOST
+            }
+            if (b.lost(!w)) {
+                return LinkerState.WON
+            }
+            return LinkerState.DEFINED
+        }
     }
 }
