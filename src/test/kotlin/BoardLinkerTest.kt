@@ -54,13 +54,14 @@ class BoardLinkerTest {
     @Test
     fun testPropagate() {
         val bp = BoardProcessor(RamStorage())
+        //6k1/3q1pp1/p4n1p/Pp2p1n1/1Pp1P3/2P1Q1PP/2B1NP2/5K2 w - - 0 26
         var board = readBoard("/test.json")
         var white = true
         for (k in 1..20) {
             bp.clearStorage()
             for (j in 1..20) {
                 for (i in 1..100) {
-                    bp.sinkTicks(8000, board, white)
+                    bp.sinkTicks(5000, board, white)
                 }
                 bp.printStats()
                 bp.reevaluateWeights(board, white)

@@ -88,7 +88,8 @@ class Pawn(x: Byte, y: Byte, w: Boolean) : Piece(x, y, w) {
         return if (w) y == Y3 else y == Y4
     }
     fun passing(m:Piece):Boolean {
-        return canPass() && m is EmptySq && (x != m.x)
+        return false
+        //return canPass() && m is EmptySq && (x != m.x)
     }
     fun go(d:Int):Int {
         return if (w) y-d else y+d
